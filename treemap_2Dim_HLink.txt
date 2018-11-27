@@ -1,0 +1,787 @@
+looker.plugins.visualizations.add({
+id : "treemap_ext_with_hyperlink",
+label : "Treemap_2Dim",
+description: "Treemap chart with 2 dimensional & 2 measures with drill capability and supports reading thresholds from filters",
+// Properties
+options: {
+    //start options
+	firstMeasureFormatName: {
+		type: 'string',
+		display: 'select',
+		label: 'Primary Measure',
+		section: 'Format',
+		values: [{'Number':'number'}],
+		default: 'number',
+		order: 1
+	},
+	 firstMeasureFormatValue: {
+		type: 'string',
+		display: 'select',
+		label: 'Number of decimals',
+		section: 'Format',
+		values: [{'0':'0'},{'1':'1'},{'2':'2'},{'3':'3'},{'4':'4'},{'5':'5'}],
+		default: '0',
+		order: 2
+	},
+     secondMeasureFormatName: {
+     type: 'string',
+     display: 'select',
+     label: 'Secondary Measure',
+     section: 'Format',
+     values: [{'Number':'number'},{'Percentage':'percentage'},{'Average':'average'}],
+     default: 'percentage',
+     order: 3
+    },
+     secondMeasureFormatValue: {
+     type: 'string',
+     display: 'select',
+     label: 'Number of decimals',
+     section: 'Format',
+     placeholder: 3,
+     values: [{'0':'0'},{'1':'1'},{'2':'2'},{'3':'3'},{'4':'4'},{'5':'5'}],
+     default: '0',
+     order: 4
+    },
+	secondMeasureType: {
+     type: 'string',
+     display: 'select',
+     label: 'Type (Value grouped at Primary Dimension)',
+     section: 'Format',
+     values: [{'Independent':'ind'},{'Margin/Average of First Measure':'mof'},{'Margin/Average of Third Measure':'mot'},{'Variance of First Measure':'vof'},{'Variance of Third Measure':'vot'}],
+     default: 'mof',
+     order: 5
+    },
+
+	lowerValue: {
+		type: 'number',
+		label: 'Lower Value <',
+		section: 'Threshold',
+		placeholder: '70',
+		default: 70,
+		order: 1,
+		display_size: "half"
+	},
+	lowerValueColor: {
+		type: 'array',
+		label: 'Lower Value Color',
+		section: 'Threshold',
+		placeholder: 'IndianRed',
+		default: "IndianRed",
+		order: 2,
+		display_size: "half"
+	},
+	middleValueColor: {
+		type: 'array',
+		label: 'Middle Value Color',
+		section: 'Threshold',
+		placeholder: 'Orange',
+		default: "Orange",
+		order: 3
+	},
+	upperValue: {
+		type: 'number',
+		label: 'Upper Value >',
+		section: 'Threshold',
+		placeholder: '90',
+		default: 90,
+		order: 4,
+		display_size: "half"
+	},
+	upperValueColor: {
+		type: 'array',
+		label: 'Upper Value Color',
+		section: 'Threshold',
+		placeholder: 'YellowGreen',
+		default: "YellowGreen",
+		order: 5,
+		display_size: "half"
+	},
+	lowerValueFilterField: {
+		type: 'string',
+		label: 'Lower Value Field',
+		section: 'Threshold',
+		placeholder: 'view_name.parameter_name',
+		order: 6
+	},
+	upperValueFilterField: {
+		type: 'string',
+		label: 'Upper Value Field',
+		section: 'Threshold',
+		placeholder: 'view_name.parameter_name',
+		order: 7
+	},
+	numberOfMeasures: {
+     type: 'string',
+     display: 'select',
+     label: 'Number of Measures',
+     section: 'General',
+     values: [{'2':'2'},{'3':'3'}],
+     default: '2',
+     order: 1
+    }
+
+
+// end options
+},
+
+create : function (element, config){
+element.innerHTML = '<style>#chart {background: #fff; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;} #chart .title {font-weight: bold;font-size: 15px;text-align: center;margin-top: 2px;margin-bottom: 2px;} text {pointer-events: none;} .grandparent text {font-weight: bold;} rect {fill: none; stroke: #fff} rect.parent, .grandparent rect {stroke-width: 2px;} rect.parent {pointer-events: none; font-weight:bold;} .grandparent rect {fill: #A192EA;} .grandparent:hover rect {fill: #9B8ED9;} .children rect.parent {stroke-width:3px; stroke:black}, .grandparent rect {cursor: pointer;}.children rect.parent {fill-opacity: .5;} .children:hover rect.child {fill: #bbb;} text.ptext{font-weight:bold;} text.ctext{font-weight:normal;font-size:90%;} .depth text.ctext{opacity:0 !important;} .depth .children text.ctext{opacity:1 !important;} text.ptext{font-size:85%} </style>';
+
+//Creating div element inside the looker provided element
+var divElement = document.createElement("div");
+divElement.id = "chart";
+$(element).append(divElement);
+
+var legendElement = document.createElement("div");
+legendElement.id="legend";
+$(element).append(legendElement);
+},
+
+	update : function (data, element, config, queryResponse){
+
+		//Storing the data of data into the variable originalDataParam;
+		var originalDataParam = data.slice();
+
+		//Clear any errors form previous updates
+		this.clearErrors();
+
+		//Check for number of measures required, this is useful for calculating %variance in the primary dim level
+		var vNumberOfMeasures = config.numberOfMeasures;
+
+		//Raise exception when dimensions & measures counts is not 2 for each
+		if (queryResponse.fields.dimensions.length != 2 || queryResponse.fields.measures.length != vNumberOfMeasures)
+		{
+			this.addError({title: "Incorrect number of Dimensions or Measures",  message: "This chart requires 2 Dimensions and "+vNumberOfMeasures+" Measures"});
+		};
+
+		//Removes svg and div element with paragraphs before plotting graph
+		d3.select(element).select("svg").remove();
+		d3.select(element).select("div>p").remove();
+		d3.select(element).select("svg").remove();
+
+		//Measure Format & decimals
+		 //First measure format
+		var vFirstMeasureFormatName = config.firstMeasureFormatName;
+		var vFirstMeasureFormatValue = config.firstMeasureFormatValue;
+		var vFirstMeasureFormatDollar = config.firstMeasureFormatName == 'number' || config.firstMeasureFormatName == 'average'? '$' : '' ;
+		var vFirstMeasureFormatPerc = config.firstMeasureFormatName == 'percentage' ? '%' : '' ;
+		 //Second measure format
+		var vSecondMeasureFormatName = config.secondMeasureFormatName;
+		var vSecondMeasureFormatValue = config.secondMeasureFormatValue;
+		var vSecondMeasureFormatDollar = config.secondMeasureFormatName == 'number' || config.secondMeasureFormatName == 'average'? '$' : '' ;
+		var vSecondMeasureFormatPerc = config.secondMeasureFormatName == 'percentage' ? '%' : '' ;
+		var vSecondMeasureType = config.secondMeasureType;
+		var vSecondMeasurePercMultiplier = vSecondMeasureFormatPerc == '%' ? 100 : 1;
+
+		//Raise exception when 2nd measure format is Percentage or Average & number of measures added are 2
+		if ((vSecondMeasureFormatName == 'percentage' || vSecondMeasureFormatName == 'average') && queryResponse.fields.measures.length == 2)
+		{
+			this.addError({title: "Incorrect number of Measures",  message: "Percentage / Average value cannot be displayed at primary dimension level without the 3rd measure(should be number) added"});
+			throw this.errors[0].title ;
+		}
+
+		//Get the lower and upper values
+		var vLowerThresholdField = config.lowerValueFilterField == null ? null : config.lowerValueFilterField;
+		var vUpperThresholdField = config.upperValueFilterField == null ? null : config.upperValueFilterField;
+
+		if(queryResponse.hasOwnProperty('applied_filters')) {
+			//Get Lower threshold value
+			if(vLowerThresholdField == null || vLowerThresholdField == "") {
+				this.addError({title: "Threshold parameter is not configured",  message: "Provide Lower threshold parameter name"});
+				throw this.errors[0].title ;
+			}
+			if(queryResponse.applied_filters.hasOwnProperty(vLowerThresholdField)){
+				var vLowerValue = queryResponse.applied_filters[vLowerThresholdField].value;
+			}
+			else{
+				var vLowerValue = config.lowerValue == null ? 0 : config.lowerValue;
+			}
+			//Get Upper threshold value
+			if(vUpperThresholdField == null || vUpperThresholdField == "") {
+				this.addError({title: "Threshold field is not configured",  message: "Provide Upper threshold parameter name"});
+				throw this.errors[0].title ;
+			}
+			if(queryResponse.applied_filters.hasOwnProperty(vUpperThresholdField)){
+				var vUpperValue = queryResponse.applied_filters[vUpperThresholdField].value;
+			}
+			else{
+				var vUpperValue = config.upperValue == null ? 0 : config.upperValue;
+			}
+		}
+		// Use the 3rd dimension (Dimension values derived from Lower & Upper threshold parameters) to render threshold values into treemap when user navigated from dashboard to explores
+		// Explore doesn't render the "applied_filters" property from hasOwnProperty when we are in Explore section
+		else{
+			if(config.query_fields["dimensions"].length >= 3){
+				var vLowerValue = data[0][config.query_fields["dimensions"][2].name].value.split("_")[0];
+				var vUpperValue = data[0][config.query_fields["dimensions"][2].name].value.split("_")[1];
+			}
+			else {
+				var vLowerValue = null;
+				var vUpperValue = null;
+			}
+			if(vUpperValue == null){
+				var vLowerValue = config.lowerValue == null ? 0 : config.lowerValue;
+			}
+			if(vUpperValue == null){
+				var vUpperValue = config.upperValue == null ? 0 : config.upperValue;
+			}
+		}
+
+		//Raise exception when Upper value is lesser than Lower value
+		if (parseFloat(vLowerValue) >= parseFloat(vUpperValue))
+		{
+			this.addError({title: "Thresholds did not meet the criteria",   message: "Upper threshold (" +vUpperValue+ ") should be greater than Lower threshold(" +vLowerValue+ ")"});
+			throw this.errors[0].title ;
+		}
+
+		var vLowerValueColor = config.lowerValueColor.length == 0 ? 'IndianRed' : config.lowerValueColor;
+		var vMiddleValueColor = config.middleValueColor.length == 0 ? 'Orange' : config.middleValueColor;
+		var vUpperValueColor = config.upperValueColor.length == 0 ? 'YellowGreen' : config.upperValueColor;
+
+		//Fetching the dimension and measure names
+		var x1Dim = queryResponse.fields.dimensions[0].label;
+		var x2Dim = queryResponse.fields.dimensions[1].label;
+		var y1MeasTemp = queryResponse.fields.measures[0].label_short.replace(/(\n|\r|\t)/gm,' ');
+		var y2MeasTemp = queryResponse.fields.measures[1].label_short.replace(/(\n|\r|\t)/gm,' ');
+		var y1Meas = y1MeasTemp.replace(/\s+$/, '');
+		var y2Meas = y2MeasTemp.replace(/\s+$/, '');
+
+		var vParentSecondMeasGrouping = '';
+
+		//Fetching data from looker into dataArr
+		dataArr = [];
+		for(var counter=0; counter<data.length; counter++){
+
+			var dataTemp = {};
+
+			var x1Val = data[counter][queryResponse.fields.dimensions[0].name].value;
+			var x2Val = data[counter][queryResponse.fields.dimensions[1].name].value;
+			var y1Val = data[counter][queryResponse.fields.measures[0].name].value;
+			var y2Val = data[counter][queryResponse.fields.measures[1].name].value*vSecondMeasurePercMultiplier;
+
+			dataTemp.key=x2Val;
+			dataTemp.primarydimension=x1Val;
+			dataTemp.value=y1Val;
+			dataTemp.y2value=y2Val;
+			dataTemp.y3value=0;
+
+			if (queryResponse.fields.measures.length == 3){
+				var y3Val = data[counter][queryResponse.fields.measures[2].name].value;
+				dataTemp.y3value=y3Val;
+			}
+
+			dataArr.push(dataTemp);
+		}
+		var elementDOM = d3.select(element)[0][0]; // To get looker Hieght and Width values into extension
+
+		/** window.addEventListener('message', function(e) {
+			var opts = e.data.opts,
+				data = e.data.data;
+
+			return main(opts, data);
+		}); **/
+
+		var defaults = {
+			margin: {top: 24, right: 0, bottom: 0, left: 0},
+			rootname: "TOP",
+			formatFirstMeas: ',.'+vFirstMeasureFormatValue+'f',
+			formatSecondMeas: ',.'+vSecondMeasureFormatValue+'f',
+			title: "",
+			width: elementDOM.clientWidth,
+			height: elementDOM.clientHeight*0.9
+		};
+
+		function main(o, data) {
+
+			var root,
+				opts = $.extend(true, {}, defaults, o),
+				formatFirstM = d3.format(opts.formatFirstMeas),
+				formatSecondM = d3.format(opts.formatSecondMeas),
+				rname = opts.rootname,
+				margin = opts.margin,
+				theight =  5;
+
+			$('#chart').width(opts.width).height(opts.height);
+			var width = opts.width - margin.left - margin.right,
+				height = opts.height - margin.top - margin.bottom - theight,
+				transitioning;
+
+			var color = d3.scale.category20c();
+
+			var x = d3.scale.linear()
+				.domain([0, width])
+				.range([0, width]);
+
+			var y = d3.scale.linear()
+				.domain([0, height])
+				.range([0, height]);
+
+			var treemap = d3.layout.treemap()
+				.children(function(d, depth) { return depth ? null : d._children; })
+				.sort(function(a, b) { return a.value - b.value; })
+				.ratio(height / width * 0.5 * (1 + Math.sqrt(5)))
+				.round(false);
+
+			var svg = d3.select("#chart").append("svg")
+						.attr("width", width + margin.left + margin.right)
+						.attr("height", height + margin.bottom + margin.top)
+						.style("margin-left", -margin.left + "px")
+						.style("margin.right", -margin.right + "px")
+						.append("g")
+						.attr("transform", "translate(" + margin.left + "," + margin.top + ")")
+						.style("shape-rendering", "crispEdges");
+			var grandparent = svg.append("g")
+								 .attr("class", "grandparent");
+
+			grandparent.append("rect")
+					   .attr("y", -margin.top)
+					   .attr("width", width)
+					   .attr("height", margin.top);
+
+			grandparent.append("text")
+					   .attr("x", 6)
+					   .attr("y", 6 - margin.top)
+					   .attr("dy", ".75em");
+
+			if (opts.title) {
+				$("#chart").prepend("<p class='title'>" + opts.title + "</p>");
+			}
+			if (data instanceof Array) {
+				root = { key: rname, values: data };
+			} else {
+				root = data;
+			}
+
+			initialize(root);
+
+			//Accumulate values at primady dimension level
+			accumulate(root,'value');
+			accumulate(root,'y2value');
+			accumulate(root,'y3value');
+
+			layout(root);
+			console.log(root);
+			display(root);
+
+			/** if (window.parent !== window) {
+				var myheight = document.documentElement.scrollHeight || document.elementDOM.scrollHeight;
+				window.parent.postMessage({height: myheight}, '*');
+			} **/
+
+			function initialize(root) {
+				root.x = root.y = 0;
+				root.dx = width;
+				root.dy = height;
+				root.depth = 0;
+			}
+
+			// Aggregate the values for internal nodes. This is normally done by the
+			// treemap layout, but not here because of our custom implementation.
+			// We also take a snapshot of the original children (_children) to avoid
+			// the children being overwritten when when layout is computed.
+			function accumulate(d,measureindex) {
+				return (d._children = d.values)
+					? d[measureindex] = d.values.reduce(function(p, v) { return p + accumulate(v,measureindex); }, 0)
+					: d[measureindex];
+			}
+
+			// Append 2nd measure (calculated) results to the primary dimension (grouped at primary dimension)
+			function appendsecondmeasurevalues(d) {
+				// Display % accumilated value of 2nd measure for primary dimension
+				if(vSecondMeasureFormatName == 'percentage') {
+					// Margin on 1st measure
+					if(vSecondMeasureType == 'mof') {
+						if(d.value != 0){
+							valueinpcnt = d.y3value / d.value;
+						}
+						else{
+							valueinpcnt = 1;
+						}
+					}
+					// Margin on 3rd measure
+					else if(vSecondMeasureType == 'mot') {
+						if(d.y3value != 0){
+							valueinpcnt = d.value / d.y3value;
+						}
+						else{
+							valueinpcnt = 1;
+						}
+					}
+					// Variance of 1st measure
+					else if(vSecondMeasureType == 'vof') {
+						if(d.value != 0){
+							valueinpcnt = (d.y3value - d.value) / d.value;
+						}
+						else{
+							valueinpcnt = 1;
+						}
+					}
+					// Variance of 3rd measure
+					else if(vSecondMeasureType == 'vot') {
+						if(d.y3value != 0){
+							valueinpcnt = (d.value - d.y3value) / d.y3value;
+						}
+						else{
+							valueinpcnt = 1;
+						}
+					}
+					finalvalue = valueinpcnt * 100;
+				}
+				// Display $ Avg/Unit accumilated value at primary dimension level
+				else if (vSecondMeasureFormatName == 'average') {
+					// Average based on 1st measure
+					if(vSecondMeasureType == 'mof') {
+						valueinpcnt = d.value / d.y3value;
+					}
+					// Average based on 3rd measure
+					else if(vSecondMeasureType == 'mot') {
+						valueinpcnt = d.y3value / d.value;
+					}
+					finalvalue = valueinpcnt;
+				}
+				// Display $ accumilated value at primary dimension level
+				else if (vSecondMeasureFormatName == 'number') {
+					finalvalue = d.y2value;
+				}
+				else {
+					finalvalue = 0;
+				}
+				return vSecondMeasureFormatDollar+formatSecondM(finalvalue)+vSecondMeasureFormatPerc ;
+			}
+
+			// Compute the treemap layout recursively such that each group of siblings
+			// uses the same size (1×rather than the dimensions of the parent cell.
+			// This optimizes the layout for the current zoom state. Note that a wrapper
+			// object is created for the parent node for each group of siblings so that
+			// the parent.s dimensions are not discarded as we recurse. Since each group
+			// of sibling was laid out in 1×we must rescale to fit using absolute
+			// coordinates. This lets us use a viewport to zoom.
+			function layout(d) {
+				if (d._children) {
+					treemap.nodes({_children: d._children});
+					d._children.forEach(function(c) {
+						c.x = d.x + c.x * d.dx;
+						c.y = d.y + c.y * d.dy;
+						c.dx *= d.dx;
+						c.dy *= d.dy;
+						c.parent = d;
+						layout(c);
+					});
+				}
+			}
+
+			function display(d) {
+				grandparent
+					.datum(d.parent)
+					.on("click", transition)
+					.select("text")
+					.text(name(d));
+
+				var g1 = svg.insert("g", ".grandparent")
+							.datum(d)
+							.attr("class", "depth");
+
+				var g = g1.selectAll("g")
+						  .data(d._children)
+						  .enter().append("g");
+
+				g.filter(function(d) { return d._children; })
+				 .classed("children", true)
+				 .on("click", transition);
+
+				var children = g.selectAll(".child")
+								.data(function(d) { return d._children || [d]; })
+								.enter().append("g");
+				var newLine = '<br/>';
+				var title= children.append("rect")
+								   .attr("class", "child")
+								   //.attr("width",2)
+								   .call(rect)
+								   .append("title")
+								   .text(function(d) { return x1Dim+' = '+d.primarydimension+'\n'+x2Dim+' = '+d.key+'\n'+y1Meas+' = '+vFirstMeasureFormatDollar+formatFirstM(d.value)+vFirstMeasureFormatPerc+'\n'+y2Meas+' = '+vSecondMeasureFormatDollar+formatSecondM(d.y2value)+vSecondMeasureFormatPerc ;});
+				children.append("text")
+						.attr("class", "ctext")
+						.text(function(d) { return d.key;})
+						.call(text2);
+
+				g.append("rect")
+				 .attr("class", "parent")
+				 .call(rect);
+
+				var t = g.append("text")
+						 .attr("class", "ptext")
+						 .attr("dy", ".75em")
+
+				t.append("tspan")
+				 .text(function(d) { return d.key; });
+				t.append("tspan")
+				 .attr("dy", "1.0em")
+				 .text(function(d) { return  y1Meas+' = '+vFirstMeasureFormatDollar+formatFirstM(d.value)+vFirstMeasureFormatPerc; });
+
+				/*<!-- Added new text to display second measure value */
+				t.append("tspan")
+				 .attr("dy", "1.05em")
+				 .text(function(d) { return y2Meas+ ' = '+ appendsecondmeasurevalues(d) });
+				 /*working code
+				 .text(function(d) { if(d.y2value || d.y2value == 0){return y2Meas+' = '+vSecondMeasureFormatDollar+formatSecondM(d.y2value)+vSecondMeasureFormatPerc;} else if(vSecondMeasureFormatName == 'percentage' && vSecondMeasureType == 'mof'){var parentPerc = 0, parentMargin = 0, parentRevenue = 0;for(var i=0; i<d.values.length; i++){parentMargin += d.values[i].y2value*d.values[i].value; parentRevenue += d.values[i].value; if (parentRevenue == 0){parentPerc = 0;}else{parentPerc = parentMargin/parentRevenue;}}return y2Meas+' = '+vSecondMeasureFormatDollar+formatSecondM(parentPerc)+vSecondMeasureFormatPerc;} else if(vSecondMeasureFormatName == 'percentage' && vSecondMeasureType == 'vos'){var parentPerc = 0, parentMargin = 0, parentRevenue = 0;for(var i=0; i<d.values.length; i++){parentMargin += d.values[i].y3value; parentRevenue += d.values[i].value; if (parentMargin == 0){parentPerc = 0;}else{parentPerc = (parentRevenue-parentMargin)/parentMargin*100;}}return y2Meas+' = '+vSecondMeasureFormatDollar+formatSecondM(parentPerc)+vSecondMeasureFormatPerc;} else if(vSecondMeasureFormatName == 'number'){var parentPerc = 0, parentMargin = 0, parentRevenue = 0;for(var i=0; i<d.values.length; i++){parentMargin += d.values[i].y2value; parentRevenue += d.values[i].value; if (parentRevenue == 0){parentPerc = 0;}else{parentPerc = parentMargin;}}return y2Meas+' = '+vSecondMeasureFormatDollar+formatSecondM(parentPerc)+vSecondMeasureFormatPerc;} });
+				*/
+
+				//While clicking on the second dimension value on any Rect elements, calls the hyperLink(e) function.
+				$(".depth .children rect.child").on("click",function(e){hyperLink(e,'parent');}); //Parent Click
+				$(".depth rect.child").on("click");
+
+				t.call(text);
+
+				g.selectAll("rect.parent")/*Added .child class*/
+				//        .style("fill", function(d) { return color(d.key); }); /* commented this line for not get different colors for each block in the chart*/
+				 .style("fill",'none');
+
+				/*<!-- Get color based on second measure value compared to threshold*/
+
+				g.selectAll("rect.child")
+				 .style("fill", function(d) { return d.y2value < vLowerValue ? vLowerValueColor : (d.y2value >= vUpperValue ? vUpperValueColor : vMiddleValueColor); });
+
+				g.selectAll("text.ctext")
+				 .style("fill",'white');
+
+				function transition(d) {
+					if (transitioning || !d) return;
+					transitioning = true;
+
+					var g2 = display(d),
+						t1 = g1.transition().duration(750),
+						t2 = g2.transition().duration(750);
+
+					// Update the domain only after entering new elements.
+					x.domain([d.x, d.x + d.dx]);
+					y.domain([d.y, d.y + d.dy]);
+
+					// Enable anti-aliasing during the transition.
+					svg.style("shape-rendering", null);
+
+					// Draw child nodes on top of parent nodes.
+					svg.selectAll(".depth").sort(function(a, b) { return a.depth - b.depth; });
+
+					// Fade-in entering text.
+					g2.selectAll("text").style("fill-opacity", 0);
+
+					// Transition to the new view.
+					t1.selectAll(".ptext").call(text).style("fill-opacity", 0);
+					t1.selectAll(".ctext").call(text2).style("fill-opacity", 0);
+					t2.selectAll(".ptext").call(text).style("fill-opacity", 1);
+					t2.selectAll(".ctext").call(text2).style("fill-opacity", 1);
+					t1.selectAll("rect").call(rect);
+					t2.selectAll("rect").call(rect);
+
+					// Remove the old node when the transition is finished.
+					t1.remove().each("end", function() {
+						svg.style("shape-rendering", "crispEdges");
+						transitioning = false;
+					});
+				}
+
+				return g;
+			}
+
+			function text(text) {
+				text.selectAll("tspan")
+					.attr("x", function(d) { return x(d.x) + 6; })
+				text.attr("x", function(d) { return x(d.x) + 6; })
+					.attr("y", function(d) { return y(d.y) + 6; })
+					.style("opacity", function(d) {var maxLength = 0; for(var i=0; i<this.childNodes.length; i++){var tSpanLength = this.childNodes[i].getComputedTextLength();if(maxLength<tSpanLength){maxLength = tSpanLength;}} return maxLength < x(d.x + d.dx) - x(d.x) ? 1 : 0; });
+			}
+
+			function text2(text) {
+				text.attr("x", function(d) { return x(d.x + d.dx) - this.getComputedTextLength() - 6; })
+					.attr("y", function(d) { return y(d.y + d.dy) - 6; })
+					.style("opacity", function(d) { return this.getComputedTextLength() < x(d.x + d.dx) - x(d.x) ? 1 : 0; });
+			}
+
+			function rect(rect) {
+				rect.attr("x", function(d) { return x(d.x); })
+					.attr("y", function(d) { return y(d.y); })
+					.attr("width", function(d) { return x(d.x + d.dx) - x(d.x); })
+					.attr("height", function(d) { return y(d.y + d.dy) - y(d.y); });
+			}
+
+			function name(d) {
+				return d.parent
+					? name(d.parent) + " / " + d.key + " ($" + formatFirstM(d.value) + ")"
+					: d.key + " ($" + formatFirstM(d.value) + ")";
+			}
+
+			//hyperLink function is to enable the drill down functionality in treemap, drill down occurs at 2 levels.
+			function hyperLink(e,elementType){
+				var currentElement = e.currentTarget;
+				var selectedRectInnerHTML = currentElement.innerHTML.replace('<title>','').replace('</title>','');
+				var convertTitleTextToArray = selectedRectInnerHTML.replace( /\n/g, ";" ).split( ";" );
+				var firstDimensionSelectedValue = convertTitleTextToArray[0].split('=')[1].trim();
+				var secondDimensionSelectedValue = convertTitleTextToArray[1].split('=')[1].trim();
+				var elementURL = '';
+				var finalURL = '';
+				var appliedFilters = Object.keys(queryResponse.applied_filters);
+				//***** Below variable extracts dimension lable and replaces " "(if space found in label) with "_", this will be considered as field name, in this case the field name in the view must be same as label name given
+				//var dim0 = queryResponse.fields.dimensions[0].label.replace(/ /g,'_').toLowerCase();
+
+				//***** Below variable extracts the labels name from the dimension
+				var firstDimensionLabel = queryResponse.fields.dimensions[0].label_short;
+				var appliedFilterField = '';
+				var clickPD = 0;
+				/* ---<IMPORTANT NOTE>
+				# Visualization can have fields used from parameter (Dynamic dimension using parameters) or dimension (static dimension)
+				# Match the dimension field label added in filters with dimension field label added in visualization. If found get the view_name.field_name from applied_filters and pass it hasownproperty in below if condition
+				# Label name is case sensitive, Label name given in dimension definition vs visualization should match
+				*/
+				for(var i=0; i<appliedFilters.length; i++)
+				{
+					//var appliedFilter = appliedFilters[i].substring(appliedFilters[i].indexOf(".")+1); //Commenting this to change the validation at label level(below variable)
+					var appliedFilterLabel = queryResponse.applied_filters[appliedFilters[i]].field.label_short;
+					//Filter field label (Given in dashboard) and Dimension lable(given in visualiaztion) should be same (Case sensitive)
+					if(appliedFilterLabel == firstDimensionLabel) {
+						appliedFilterField = appliedFilters[i];
+					}
+				}
+
+		// ***** Commented below code to pass applied filters found in above loop run through filters	//if(queryResponse.hasOwnProperty('applied_filters')){if(queryResponse.applied_filters.hasOwnProperty(queryResponse.fields.dimensions[0].scope+'.'+queryResponse.fields.dimensions[0].label_short.replace(/ /g,'_').toLowerCase())){clickPD=1}else{clickPD=0}}else{clickPD=0};
+			if(queryResponse.hasOwnProperty('applied_filters')){if(queryResponse.applied_filters.hasOwnProperty(appliedFilterField)){clickPD=1}else{clickPD=0}}else{clickPD=0};
+
+				for(var i=0; i<originalDataParam.length; i++)
+				{
+					var originalDataElement = originalDataParam[i];
+					var firstDimensionValue = originalDataElement[queryResponse.fields.dimensions[0].name].value == null ? "null" : originalDataElement[queryResponse.fields.dimensions[0].name].value ;
+					var secondDimensionValue = originalDataElement[queryResponse.fields.dimensions[1].name].value == null ? "null" : originalDataElement[queryResponse.fields.dimensions[1].name].value ;
+						//Commented below code to handle refresh null selections in treemap - Chenna
+					//if(originalDataElement[queryResponse.fields.dimensions[0].name].value == firstDimensionSelectedValue &&
+					//	originalDataElement[queryResponse.fields.dimensions[1].name].value == secondDimensionSelectedValue) {
+						//if(originalDataElement[queryResponse.fields.dimensions[0].name].value) {
+
+					if(firstDimensionValue == firstDimensionSelectedValue && secondDimensionValue == secondDimensionSelectedValue) {
+						if(firstDimensionValue) {
+							baseURL = unescape(currentElement.baseURI);
+							firstDimLabelName = queryResponse.fields.dimensions[0].label_short+'=';
+							firstDimSelectedValue = firstDimensionSelectedValue+'&';
+							if(firstDimSelectedValue.includes(",")){
+								firstDimSelectedValue = firstDimSelectedValue.replace(",","^,")
+							}
+							secondDimLabelName = queryResponse.fields.dimensions[1].label_short+'=';
+							secondDimSelectedValue = secondDimensionSelectedValue;
+							if(secondDimSelectedValue.includes(",")){
+								secondDimSelectedValue = secondDimSelectedValue.replace(",","^,")
+							}
+							if(clickPD == 0) { //First dimension value selected
+								/*<IMPORTANT NOTE>
+								URL contains the labels of Filters not the field labels, ensure both dimension label & lable given for fitler are same, else the data will not get refreshed with selected values. This is applicable to all the dimensions added in visualization & filters
+								*/
+								if(baseURL.includes('&'+firstDimLabelName)) {// This step checks the existance of filter with the label name(it performs full name check with & prefixed, & is required to validate the complete name in url)
+									if(baseURL.includes('&'+firstDimLabelName+firstDimSelectedValue)) { //Check if value from First dimension is already selected
+										finalURL =  '';
+									}
+									else { //Include First dimension selected value to the url
+										elementURL = baseURL.replace(firstDimLabelName,(firstDimLabelName+firstDimSelectedValue).substring(0,(firstDimLabelName+firstDimSelectedValue).indexOf('&')));
+										finalURL = elementURL.substring(0,elementURL.indexOf('filter_config'));
+									}
+								}
+								else {
+									finalURL =  '';
+								}
+
+							}
+							else {
+								if(baseURL.includes('&'+secondDimLabelName)) { // This step checks the existance of filter with the label name(it performs full name check with & prefixed, & is required to validate the complete name in url)
+									if(baseURL.includes('&'+secondDimLabelName+secondDimSelectedValue)) { //Check if value from Second dimension is already selected
+										finalURL =  '';
+									}
+									else {	//Include Second dimension selected value to the url
+										elementURL = baseURL.replace(secondDimLabelName,(secondDimLabelName+secondDimSelectedValue));
+										finalURL = elementURL.substring(0,elementURL.indexOf('filter_config'));
+									}
+								}
+								else {
+									finalURL =  '';
+								}
+
+							}
+							if(finalURL != '') {
+								window.location.href = finalURL;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if (window.location.hash === "") {
+			var dataTemp = d3.nest().key(function(d) { return d.primarydimension; }).entries(dataArr);
+			main({title: ""}, {key: "Total", values: dataTemp});
+		}
+		//Creating Legend
+		var	lHeight = elementDOM.clientHeight;
+		var lWidth = elementDOM.clientWidth;
+		var	height = elementDOM.clientHeight;
+		var width = elementDOM.clientWidth;
+		var vLowerValueLegend = '<'+vLowerValue;
+		var vUpperValueLegend = '>='+vUpperValue;
+		var vMiddleValueLegend = '>='+vLowerValue+' and <' + vUpperValue;
+		var legendHeight = height*0.1;
+		var legendWidth  = width;
+		var svgLegend = d3.select("#legend").append("svg")
+						  .attr("width",legendWidth)
+						  .attr("height",legendHeight);
+		var ydist=legendHeight*0.5;
+		var yTextDist =legendHeight*0.6;
+		var radius = legendWidth*0.008;
+		var fontColor="696969";
+		var fontSize=width*0.015;
+		var fontFamily="Helvetica";
+		var initialXSpacing= 0.03;
+		var leftCircle= svgLegend.append("circle")
+								 .attr('cx',legendWidth*initialXSpacing)
+								 .attr('cy',ydist)
+								 .attr('r',radius)
+								//.style('stroke','black')
+								//.style('stroke-width','1px')
+								 .style('fill',vLowerValueColor);
+		var elementSpace = 0.015;
+		var leftCircleText= svgLegend.append("text")
+									 .attr('x',legendWidth*(initialXSpacing+elementSpace))
+									 .attr('y',yTextDist)
+									 .style("font-size",fontSize)
+									 .style('font-family',fontFamily)
+									 .style("fill", fontColor)
+									 .text(vLowerValueLegend);
+		var vLowerValueLength = vLowerValueLegend.length;
+		var middleCircle= svgLegend.append("circle")
+								   .attr('cx',legendWidth*(initialXSpacing+(vLowerValueLength*0.01)+0.02+(elementSpace*2)))
+								   .attr('cy',ydist)
+								   .attr('r',radius)
+								   //.style('stroke','black')
+								   //.style('stroke-width','1px')
+								   .style('fill', vMiddleValueColor);
+		var middleCircleText= svgLegend.append("text")
+									   .attr('x',legendWidth*(initialXSpacing+(vLowerValueLength*0.01)+0.02+(elementSpace*3)))
+									   .attr('y',yTextDist)
+									   .style("font-size",fontSize)
+									   .style('font-family',fontFamily)
+									   .style("fill", fontColor)
+									   .text(vMiddleValueLegend);
+		var vMiddleValueLength = vMiddleValueLegend.length;
+		var rightCircle= svgLegend.append("circle")
+								  .attr('cx',legendWidth*(initialXSpacing+((vLowerValueLength+vMiddleValueLength)*0.01)+0.02+(elementSpace*4)))
+								  .attr('cy',ydist)
+								  .attr('r',radius)
+								  //.style('stroke','black')
+								  //.style('stroke-width','1px')
+								  .style('fill',vUpperValueColor);
+		var rightCircleText= svgLegend.append("text")
+									  .attr('x',legendWidth*(initialXSpacing+((vLowerValueLength+vMiddleValueLength)*0.01)+0.02+(elementSpace*5)))
+									  .attr('y',yTextDist)
+									  .style("font-size",fontSize)
+									  .style('font-family',fontFamily)
+									  .style("fill", fontColor)
+									  .text(vUpperValueLegend);
+
+	//End of Legend
+	}
+})
+
+
